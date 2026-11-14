@@ -1,4 +1,4 @@
-"""Validate a 40-panel comic manifest before rendering."""
+"""Validate a 30-panel comic manifest before rendering."""
 from __future__ import annotations
 
 import argparse
@@ -37,8 +37,8 @@ def validate_manifest(manifest: dict[str, Any], base_dir: Path) -> list[str]:
     if manifest.get("aspectRatio") != "16:9":
         errors.append("aspectRatio must be '16:9'.")
 
-    if not isinstance(panels, list) or len(panels) != 40:
-        errors.append("panels must contain exactly 40 entries.")
+    if not isinstance(panels, list) or len(panels) != 30:
+        errors.append("panels must contain exactly 30 entries.")
         return errors
 
     for index, panel in enumerate(panels, start=1):
@@ -89,7 +89,7 @@ def validate_manifest(manifest: dict[str, Any], base_dir: Path) -> list[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Validate a 40-panel comic manifest.")
+    parser = argparse.ArgumentParser(description="Validate a 30-panel comic manifest.")
     parser.add_argument("manifest", type=Path)
     args = parser.parse_args()
 
@@ -109,7 +109,7 @@ def main() -> int:
             print(f"ERROR: {error}")
         return 1
 
-    print("Manifest valid: exactly 40 ordered panels.")
+    print("Manifest valid: exactly 30 ordered panels.")
     return 0
 
 
