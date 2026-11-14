@@ -45,13 +45,38 @@ class ManifestValidationTests(unittest.TestCase):
     def test_rejects_missing_image(self):
         self.manifest["panels"][0]["image"] = "missing.png"
         errors = validate_manifest(self.manifest, self.base)
-        self.assertTrue(any("image does not exist" in error for error in errors))
+        self.assertTrue(any("file does not exist" in error for error in errors))
 
     def test_factual_story_requires_two_domains(self):
         self.manifest["isFactual"] = True
         self.manifest["sourceFactRefs"] = [{"url": "https://news.example.com/story"}]
         errors = validate_manifest(self.manifest, self.base)
         self.assertTrue(any("two distinct domains" in error for error in errors))
+
+    def test_rejects_parent_directory_image_traversal(self):
+        outside = self.base.parent / "outside.png"
+        outside.write_bytes(b"not-an-image")
+        try:
+            self.manifest["panels"][0]["image"] = "../outside.png"
+            errors = validate_manifest(self.manifest, self.base)
+            self.assertTrue(any("stay inside" in error for error in errors))
+        finally:
+            outside.unlink(missing_ok=True)
+
+    def test_rejects_missing_narration_audio(self):
+        self.manifest["audio"] = {"narrationPath": "missing.wav"}
+        errors = validate_manifest(self.manifest, self.base)
+        self.assertTrue(any("Narration audio file does not exist" in error for error in errors))
+
+    def test_rejects_audio_path_traversal(self):
+        outside = self.base.parent / "outside.wav"
+        outside.write_bytes(b"not-audio")
+        try:
+            self.manifest["audio"] = {"narrationPath": "../outside.wav"}
+            errors = validate_manifest(self.manifest, self.base)
+            self.assertTrue(any("Narration audio must stay inside" in error for error in errors))
+        finally:
+            outside.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
