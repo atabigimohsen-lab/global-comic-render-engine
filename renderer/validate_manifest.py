@@ -8,6 +8,28 @@ from urllib.parse import urlparse
 from typing import Any
 
 
+def _validate_local_file(raw_path: Any, base_dir: Path, label: str, errors: list[str]) -> None:
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        errors.append(f"{label} must be a non-empty relative file path.")
+        return
+
+    candidate = Path(raw_path)
+    if candidate.is_absolute() or "\\" in raw_path or "\x00" in raw_path:
+        errors.append(f"{label} must be a safe relative path inside the manifest directory.")
+        return
+
+    root = base_dir.resolve()
+    resolved = (root / candidate).resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        errors.append(f"{label} must stay inside the manifest directory.")
+        return
+
+    if not resolved.is_file():
+        errors.append(f"{label} file does not exist: {raw_path}")
+
+
 def validate_manifest(manifest: dict[str, Any], base_dir: Path) -> list[str]:
     errors: list[str] = []
     panels = manifest.get("panels")
@@ -31,22 +53,22 @@ def validate_manifest(manifest: dict[str, Any], base_dir: Path) -> list[str]:
         if not isinstance(panel.get("artPrompt"), str) or not panel["artPrompt"].strip():
             errors.append(f"Panel {expected} is missing artPrompt.")
 
-        image_path = panel.get("image")
-        if not isinstance(image_path, str) or not image_path.strip():
-            errors.append(f"Panel {expected} is missing image.")
-        elif not (base_dir / image_path).is_file():
-            errors.append(f"Panel {expected} image does not exist: {image_path}")
+        _validate_local_file(panel.get("image"), base_dir, f"Panel {expected} image", errors)
 
         duration = panel.get("durationSeconds")
         if not isinstance(duration, (int, float)) or isinstance(duration, bool) or not 0.25 <= duration <= 30:
             errors.append(f"Panel {expected} durationSeconds must be between 0.25 and 30.")
 
-        has_text = any(
-            panel.get(key)
-            for key in ("dialogue", "narration", "sfx")
-        )
+        has_text = any(panel.get(key) for key in ("dialogue", "narration", "sfx"))
         if not has_text and panel.get("silentPanel") is not True:
             errors.append(f"Panel {expected} needs dialogue, narration, SFX, or silentPanel=true.")
+
+    audio = manifest.get("audio")
+    if audio is not None:
+        if not isinstance(audio, dict):
+            errors.append("audio must be an object when provided.")
+        elif audio.get("narrationPath") is not None:
+            _validate_local_file(audio.get("narrationPath"), base_dir, "Narration audio", errors)
 
     if manifest.get("isFactual") is True:
         refs = manifest.get("sourceFactRefs", [])
