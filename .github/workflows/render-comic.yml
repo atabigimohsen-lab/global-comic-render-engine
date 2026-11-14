@@ -7,8 +7,8 @@ on:
         description: "Unique render job ID (8-64 letters, digits, underscore or hyphen)"
         required: true
         type: string
-      object_key:
-        description: "Private R2 object key, e.g. incoming/<job_id>.zip"
+      drive_file_id:
+        description: "Google Drive file ID of the private ZIP inside the configured input folder"
         required: true
         type: string
 
@@ -22,14 +22,14 @@ concurrency:
 jobs:
   render:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
-      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-      R2_BUCKET: ${{ secrets.R2_BUCKET }}
-      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      DRIVE_INPUT_FOLDER_ID: ${{ secrets.DRIVE_INPUT_FOLDER_ID }}
+      DRIVE_OUTPUT_FOLDER_ID: ${{ secrets.DRIVE_OUTPUT_FOLDER_ID }}
       COMIC_JOB_ID: ${{ inputs.job_id }}
-      COMIC_OBJECT_KEY: ${{ inputs.object_key }}
+      DRIVE_FILE_ID: ${{ inputs.drive_file_id }}
+
     steps:
       - name: Check out renderer source
         uses: actions/checkout@v4
@@ -39,51 +39,83 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install FFmpeg and S3 client
+      - name: Install FFmpeg and Google Drive client dependencies
         run: |
           sudo apt-get update
           sudo apt-get install --yes ffmpeg
-          python -m pip install --disable-pip-version-check boto3
+          python -m pip install --disable-pip-version-check google-auth requests
 
-      - name: Download, validate, render and store privately
+      - name: Download from private Drive, validate, render and upload to private Drive
         run: |
           python - <<'PY'
           import json
           import os
           import re
-          import shutil
           import subprocess
           import tempfile
           import zipfile
           from pathlib import Path, PurePosixPath
 
-          import boto3
+          from google.auth.transport.requests import AuthorizedSession
+          from google.oauth2 import service_account
 
           job_id = os.environ["COMIC_JOB_ID"]
-          object_key = os.environ["COMIC_OBJECT_KEY"]
+          file_id = os.environ["DRIVE_FILE_ID"]
+          input_folder_id = os.environ["DRIVE_INPUT_FOLDER_ID"]
+          output_folder_id = os.environ["DRIVE_OUTPUT_FOLDER_ID"]
           if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", job_id):
               raise SystemExit("Invalid job_id.")
-          if object_key != f"incoming/{job_id}.zip":
-              raise SystemExit("object_key must exactly match incoming/<job_id>.zip.")
-          required = ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY")
+          if not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", file_id):
+              raise SystemExit("Invalid Google Drive file ID.")
+          required = ("GOOGLE_SERVICE_ACCOUNT_JSON", "DRIVE_INPUT_FOLDER_ID", "DRIVE_OUTPUT_FOLDER_ID")
           missing = [key for key in required if not os.environ.get(key)]
           if missing:
               raise SystemExit("Missing GitHub Actions repository secrets: " + ", ".join(missing))
 
-          s3 = boto3.client(
-              "s3",
-              endpoint_url=os.environ["R2_ENDPOINT"],
-              region_name="auto",
-              aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
-              aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+          try:
+              service_account_info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
+              credentials = service_account.Credentials.from_service_account_info(
+                  service_account_info,
+                  scopes=["https://www.googleapis.com/auth/drive"],
+              )
+          except Exception as exc:
+              raise SystemExit("Google service-account secret is not valid JSON credentials.") from exc
+
+          session = AuthorizedSession(credentials)
+          api = "https://www.googleapis.com/drive/v3"
+          metadata_response = session.get(
+              f"{api}/files/{file_id}",
+              params={"fields": "id,name,mimeType,parents,size,trashed"},
+              timeout=60,
           )
+          metadata_response.raise_for_status()
+          source_meta = metadata_response.json()
+          if source_meta.get("trashed"):
+              raise SystemExit("Input ZIP is in trash.")
+          if input_folder_id not in source_meta.get("parents", []):
+              raise SystemExit("Input file is not directly inside the configured private input folder.")
+          if source_meta.get("mimeType") != "application/zip":
+              raise SystemExit("Input file must be an application/zip file.")
+          if int(source_meta.get("size", 0)) > 2_000_000_000:
+              raise SystemExit("Compressed input ZIP exceeds the 2 GB safety limit.")
 
           with tempfile.TemporaryDirectory(prefix="comic-job-") as temp:
               root = Path(temp)
               bundle = root / "bundle.zip"
               extracted = root / "bundle"
               extracted.mkdir()
-              s3.download_file(os.environ["R2_BUCKET"], object_key, str(bundle))
+
+              with session.get(
+                  f"{api}/files/{file_id}",
+                  params={"alt": "media"},
+                  stream=True,
+                  timeout=(30, 180),
+              ) as response:
+                  response.raise_for_status()
+                  with bundle.open("wb") as output_file:
+                      for chunk in response.iter_content(chunk_size=1024 * 1024):
+                          if chunk:
+                              output_file.write(chunk)
 
               with zipfile.ZipFile(bundle) as archive:
                   entries = archive.infolist()
@@ -91,14 +123,18 @@ jobs:
                       raise SystemExit("Bundle must contain between 1 and 2000 entries.")
                   if sum(item.file_size for item in entries) > 2_000_000_000:
                       raise SystemExit("Uncompressed bundle exceeds the 2 GB safety limit.")
+                  names = set()
                   for item in entries:
                       name = item.filename
                       path = PurePosixPath(name)
-                      if not name or path.is_absolute() or ".." in path.parts or "\\" in name:
+                      if not name or path.is_absolute() or ".." in path.parts or chr(92) in name:
                           raise SystemExit("Unsafe path found in ZIP bundle.")
                       if (item.external_attr >> 16) & 0o170000 == 0o120000:
                           raise SystemExit("Symbolic links are not allowed in ZIP bundles.")
-                  if "manifest.json" not in archive.namelist():
+                      if name in names:
+                          raise SystemExit("Duplicate ZIP entry path.")
+                      names.add(name)
+                  if "manifest.json" not in names:
                       raise SystemExit("Bundle must contain manifest.json at its root.")
                   archive.extractall(extracted)
 
@@ -128,13 +164,75 @@ jobs:
               if audio and any(stream.get("codec_name") != "aac" for stream in audio):
                   raise SystemExit("Rendered MP4 contains a non-AAC audio stream.")
 
-              output_key = f"rendered/{job_id}.mp4"
-              s3.upload_file(
-                  str(output),
-                  os.environ["R2_BUCKET"],
-                  output_key,
-                  ExtraArgs={"ContentType": "video/mp4"},
+              total_size = output.stat().st_size
+              upload_metadata = {
+                  "name": f"{job_id}.mp4",
+                  "mimeType": "video/mp4",
+                  "parents": [output_folder_id],
+                  "description": "Rendered by Global Comic Render Engine; original source bundle retained privately.",
+              }
+              init = session.post(
+                  "https://www.googleapis.com/upload/drive/v3/files",
+                  params={"uploadType": "resumable", "fields": "id,name,mimeType,parents,size"},
+                  json=upload_metadata,
+                  headers={
+                      "X-Upload-Content-Type": "video/mp4",
+                      "X-Upload-Content-Length": str(total_size),
+                  },
+                  timeout=60,
               )
-              s3.delete_object(Bucket=os.environ["R2_BUCKET"], Key=object_key)
-              print("Private render complete. Output object: " + output_key)
+              init.raise_for_status()
+              upload_url = init.headers.get("Location")
+              if not upload_url:
+                  raise SystemExit("Google Drive did not return a resumable upload URL.")
+
+              uploaded = None
+              chunk_size = 8 * 1024 * 1024
+              with output.open("rb") as rendered_file:
+                  start = 0
+                  while start < total_size:
+                      chunk = rendered_file.read(chunk_size)
+                      if not chunk:
+                          break
+                      end = start + len(chunk) - 1
+                      result = session.put(
+                          upload_url,
+                          data=chunk,
+                          headers={
+                              "Content-Length": str(len(chunk)),
+                              "Content-Type": "video/mp4",
+                              "Content-Range": f"bytes {start}-{end}/{total_size}",
+                          },
+                          timeout=(30, 300),
+                      )
+                      if end + 1 < total_size:
+                          if result.status_code != 308:
+                              result.raise_for_status()
+                              raise SystemExit("Unexpected response during resumable Drive upload.")
+                      else:
+                          result.raise_for_status()
+                          uploaded = result.json()
+                      start = end + 1
+
+              if not uploaded or not uploaded.get("id"):
+                  raise SystemExit("Google Drive did not confirm the rendered MP4 upload.")
+
+              verify_response = session.get(
+                  f"{api}/files/{uploaded['id']}",
+                  params={"fields": "id,name,mimeType,parents,size"},
+                  timeout=60,
+              )
+              verify_response.raise_for_status()
+              saved = verify_response.json()
+              if output_folder_id not in saved.get("parents", []) or int(saved.get("size", 0)) != total_size:
+                  raise SystemExit("Uploaded MP4 verification failed; source ZIP was retained.")
+              print(
+                  "Private render verified. Drive file ID: "
+                  + saved["id"]
+                  + " | name: "
+                  + saved["name"]
+                  + " | bytes: "
+                  + str(total_size)
+              )
+              print("Source ZIP was retained; no input file was deleted.")
           PY
