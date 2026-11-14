@@ -75,7 +75,13 @@ def validate_manifest(manifest: dict[str, Any], base_dir: Path) -> list[str]:
         domains = set()
         if isinstance(refs, list):
             for ref in refs:
-                if isinstance(ref, dict) and isinstance(ref.get("url"), str):
+                if not isinstance(ref, dict):
+                    continue
+                publisher = ref.get("publisher")
+                if isinstance(publisher, str) and publisher.strip():
+                    domains.add(publisher.strip().lower().removeprefix("www."))
+                    continue
+                if isinstance(ref.get("url"), str):
                     domain = urlparse(ref["url"]).hostname
                     if domain:
                         domains.add(domain.lower().removeprefix("www."))
