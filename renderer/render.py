@@ -1,4 +1,4 @@
-"""Render a validated 40-panel manifest to an MP4 using FFmpeg."""
+"""Render a validated 30-panel manifest to an MP4 using FFmpeg."""
 from __future__ import annotations
 
 import argparse
@@ -76,7 +76,7 @@ def render(manifest_path: Path, output_path: Path) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Render a validated 40-panel comic to MP4.")
+    parser = argparse.ArgumentParser(description="Render a validated 30-panel comic to MP4.")
     parser.add_argument("manifest", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
