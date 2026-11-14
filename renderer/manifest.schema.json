@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Global Comic Render Manifest",
+  "type": "object",
+  "required": ["title", "aspectRatio", "panels"],
+  "properties": {
+    "title": { "type": "string", "minLength": 1 },
+    "category": { "type": "string" },
+    "isFactual": { "type": "boolean" },
+    "aspectRatio": { "const": "16:9" },
+    "worldBible": { "type": "string" },
+    "sourceFactRefs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+          "publisher": { "type": "string" },
+          "url": { "type": "string", "format": "uri" }
+        }
+      }
+    },
+    "audio": {
+      "type": "object",
+      "properties": {
+        "narrationPath": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "panels": {
+      "type": "array",
+      "minItems": 40,
+      "maxItems": 40,
+      "items": {
+        "type": "object",
+        "required": ["seq", "artPrompt", "image", "durationSeconds"],
+        "properties": {
+          "seq": { "type": "string", "pattern": "^(0[1-9]|[1-3][0-9]|40)$" },
+          "artPrompt": { "type": "string", "minLength": 1 },
+          "image": { "type": "string", "minLength": 1 },
+          "durationSeconds": { "type": "number", "minimum": 0.25, "maximum": 30 },
+          "dialogue": {},
+          "narration": { "type": "string" },
+          "sfx": {},
+          "silentPanel": { "type": "boolean" }
+        }
+      }
+    }
+  }
+}
