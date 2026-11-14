@@ -50,6 +50,12 @@ The current architecture is:
 
 The n8n bridge uses the existing private Google Drive OAuth connection. This design does not require a Google service-account JSON key or public Drive links.
 
+## Transfer limits and current verification status
+
+n8n's Webhook documentation lists a 16 MB maximum webhook payload, and n8n Cloud documents a 100-second webhook response timeout. Multipart binary uploads and binary responses have additional hosting-specific behavior, so the current 100 MB workflow caps must not be treated as a verified n8n Cloud guarantee. Large media should use a chunked/resumable transfer design or be proven against the actual Cloud plan before production use.
+
+The local renderer test suite has passed in this environment. The complete GitHub Actions → n8n → private Drive round trip has not yet been run. No cloud render has been claimed as successful.
+
 ## Resource and activation safeguards
 
 - Rendering is started manually; no scheduled GitHub runner is started by this repository.
