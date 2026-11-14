@@ -7,8 +7,8 @@ on:
         description: "Unique render job ID (8-64 letters, digits, underscore or hyphen)"
         required: true
         type: string
-      drive_file_id:
-        description: "Google Drive file ID of the private ZIP inside the configured input folder"
+      drive_file_name:
+        description: "Exact ZIP filename inside the private Google Drive input folder"
         required: true
         type: string
 
@@ -24,11 +24,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-      DRIVE_INPUT_FOLDER_ID: ${{ secrets.DRIVE_INPUT_FOLDER_ID }}
-      DRIVE_OUTPUT_FOLDER_ID: ${{ secrets.DRIVE_OUTPUT_FOLDER_ID }}
       COMIC_JOB_ID: ${{ inputs.job_id }}
-      DRIVE_FILE_ID: ${{ inputs.drive_file_id }}
+      DRIVE_FILE_NAME: ${{ inputs.drive_file_name }}
+      N8N_COMIC_BRIDGE_KEY: ${{ secrets.N8N_COMIC_BRIDGE_KEY }}
+      N8N_COMIC_BRIDGE_BASE: https://ata007.app.n8n.cloud/webhook/comic-render-bridge
 
     steps:
       - name: Check out renderer source
@@ -39,13 +38,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install FFmpeg and Google Drive client dependencies
+      - name: Install FFmpeg and HTTP client
         run: |
           sudo apt-get update
           sudo apt-get install --yes ffmpeg
-          python -m pip install --disable-pip-version-check google-auth requests
+          python -m pip install --disable-pip-version-check requests
 
-      - name: Download from private Drive, validate, render and upload to private Drive
+      - name: Download private ZIP through authenticated n8n bridge, validate, render and upload MP4
         run: |
           python - <<'PY'
           import json
@@ -56,73 +55,54 @@ jobs:
           import zipfile
           from pathlib import Path, PurePosixPath
 
-          from google.auth.transport.requests import AuthorizedSession
-          from google.oauth2 import service_account
+          import requests
 
           job_id = os.environ["COMIC_JOB_ID"]
-          file_id = os.environ["DRIVE_FILE_ID"]
-          input_folder_id = os.environ["DRIVE_INPUT_FOLDER_ID"]
-          output_folder_id = os.environ["DRIVE_OUTPUT_FOLDER_ID"]
+          file_name = os.environ["DRIVE_FILE_NAME"]
+          bridge_key = os.environ.get("N8N_COMIC_BRIDGE_KEY")
+          bridge = os.environ["N8N_COMIC_BRIDGE_BASE"].rstrip("/")
           if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", job_id):
               raise SystemExit("Invalid job_id.")
-          if not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", file_id):
-              raise SystemExit("Invalid Google Drive file ID.")
-          required = ("GOOGLE_SERVICE_ACCOUNT_JSON", "DRIVE_INPUT_FOLDER_ID", "DRIVE_OUTPUT_FOLDER_ID")
-          missing = [key for key in required if not os.environ.get(key)]
-          if missing:
-              raise SystemExit("Missing GitHub Actions repository secrets: " + ", ".join(missing))
+          if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.zip", file_name, re.IGNORECASE):
+              raise SystemExit("drive_file_name must be a simple ZIP filename without folders or path separators.")
+          if not bridge_key:
+              raise SystemExit("Missing GitHub Actions secret: N8N_COMIC_BRIDGE_KEY.")
 
-          try:
-              service_account_info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
-              credentials = service_account.Credentials.from_service_account_info(
-                  service_account_info,
-                  scopes=["https://www.googleapis.com/auth/drive"],
-              )
-          except Exception as exc:
-              raise SystemExit("Google service-account secret is not valid JSON credentials.") from exc
-
-          session = AuthorizedSession(credentials)
-          api = "https://www.googleapis.com/drive/v3"
-          metadata_response = session.get(
-              f"{api}/files/{file_id}",
-              params={"fields": "id,name,mimeType,parents,size,trashed"},
-              timeout=60,
-          )
-          metadata_response.raise_for_status()
-          source_meta = metadata_response.json()
-          if source_meta.get("trashed"):
-              raise SystemExit("Input ZIP is in trash.")
-          if input_folder_id not in source_meta.get("parents", []):
-              raise SystemExit("Input file is not directly inside the configured private input folder.")
-          if source_meta.get("mimeType") != "application/zip":
-              raise SystemExit("Input file must be an application/zip file.")
-          if int(source_meta.get("size", 0)) > 2_000_000_000:
-              raise SystemExit("Compressed input ZIP exceeds the 2 GB safety limit.")
-
+          headers = {"X-Comic-Bridge-Key": bridge_key}
           with tempfile.TemporaryDirectory(prefix="comic-job-") as temp:
               root = Path(temp)
               bundle = root / "bundle.zip"
               extracted = root / "bundle"
               extracted.mkdir()
 
-              with session.get(
-                  f"{api}/files/{file_id}",
-                  params={"alt": "media"},
+              with requests.post(
+                  f"{bridge}/download",
+                  json={"fileName": file_name},
+                  headers=headers,
                   stream=True,
-                  timeout=(30, 180),
+                  timeout=(20, 95),
               ) as response:
                   response.raise_for_status()
+                  content_type = response.headers.get("Content-Type", "").split(";")[0].lower()
+                  if content_type != "application/zip":
+                      raise SystemExit("Private Drive bridge did not return an application/zip file.")
+                  total = 0
                   with bundle.open("wb") as output_file:
                       for chunk in response.iter_content(chunk_size=1024 * 1024):
                           if chunk:
+                              total += len(chunk)
+                              if total > 100_000_000:
+                                  raise SystemExit("Input ZIP exceeds the 100 MB n8n Cloud bridge safety limit.")
                               output_file.write(chunk)
+              if total == 0:
+                  raise SystemExit("Downloaded ZIP is empty.")
 
               with zipfile.ZipFile(bundle) as archive:
                   entries = archive.infolist()
                   if not entries or len(entries) > 2000:
                       raise SystemExit("Bundle must contain between 1 and 2000 entries.")
-                  if sum(item.file_size for item in entries) > 2_000_000_000:
-                      raise SystemExit("Uncompressed bundle exceeds the 2 GB safety limit.")
+                  if sum(item.file_size for item in entries) > 500_000_000:
+                      raise SystemExit("Uncompressed bundle exceeds the 500 MB safety limit.")
                   names = set()
                   for item in entries:
                       name = item.filename
@@ -165,72 +145,26 @@ jobs:
                   raise SystemExit("Rendered MP4 contains a non-AAC audio stream.")
 
               total_size = output.stat().st_size
-              upload_metadata = {
-                  "name": f"{job_id}.mp4",
-                  "mimeType": "video/mp4",
-                  "parents": [output_folder_id],
-                  "description": "Rendered by Global Comic Render Engine; original source bundle retained privately.",
-              }
-              init = session.post(
-                  "https://www.googleapis.com/upload/drive/v3/files",
-                  params={"uploadType": "resumable", "fields": "id,name,mimeType,parents,size"},
-                  json=upload_metadata,
-                  headers={
-                      "X-Upload-Content-Type": "video/mp4",
-                      "X-Upload-Content-Length": str(total_size),
-                  },
-                  timeout=60,
-              )
-              init.raise_for_status()
-              upload_url = init.headers.get("Location")
-              if not upload_url:
-                  raise SystemExit("Google Drive did not return a resumable upload URL.")
+              if total_size <= 0 or total_size > 100_000_000:
+                  raise SystemExit("Rendered MP4 must be between 1 byte and 100 MB for the n8n Cloud bridge.")
 
-              uploaded = None
-              chunk_size = 8 * 1024 * 1024
               with output.open("rb") as rendered_file:
-                  start = 0
-                  while start < total_size:
-                      chunk = rendered_file.read(chunk_size)
-                      if not chunk:
-                          break
-                      end = start + len(chunk) - 1
-                      result = session.put(
-                          upload_url,
-                          data=chunk,
-                          headers={
-                              "Content-Length": str(len(chunk)),
-                              "Content-Type": "video/mp4",
-                              "Content-Range": f"bytes {start}-{end}/{total_size}",
-                          },
-                          timeout=(30, 300),
-                      )
-                      if end + 1 < total_size:
-                          if result.status_code != 308:
-                              result.raise_for_status()
-                              raise SystemExit("Unexpected response during resumable Drive upload.")
-                      else:
-                          result.raise_for_status()
-                          uploaded = result.json()
-                      start = end + 1
-
-              if not uploaded or not uploaded.get("id"):
-                  raise SystemExit("Google Drive did not confirm the rendered MP4 upload.")
-
-              verify_response = session.get(
-                  f"{api}/files/{uploaded['id']}",
-                  params={"fields": "id,name,mimeType,parents,size"},
-                  timeout=60,
-              )
-              verify_response.raise_for_status()
-              saved = verify_response.json()
-              if output_folder_id not in saved.get("parents", []) or int(saved.get("size", 0)) != total_size:
-                  raise SystemExit("Uploaded MP4 verification failed; source ZIP was retained.")
+                  upload = requests.post(
+                      f"{bridge}/upload",
+                      params={"fileName": f"{job_id}.mp4"},
+                      headers=headers,
+                      files={"data": (f"{job_id}.mp4", rendered_file, "video/mp4")},
+                      timeout=(20, 95),
+                  )
+              upload.raise_for_status()
+              saved = upload.json()
+              if saved.get("ok") is not True or not saved.get("fileId") or saved.get("mimeType") != "video/mp4":
+                  raise SystemExit("Private Drive bridge did not confirm the MP4 upload.")
               print(
-                  "Private render verified. Drive file ID: "
-                  + saved["id"]
+                  "Private render uploaded. Drive file ID: "
+                  + saved["fileId"]
                   + " | name: "
-                  + saved["name"]
+                  + str(saved.get("name"))
                   + " | bytes: "
                   + str(total_size)
               )
