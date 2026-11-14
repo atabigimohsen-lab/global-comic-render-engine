@@ -68,7 +68,7 @@ jobs:
           if not bridge_key:
               raise SystemExit("Missing GitHub Actions secret: N8N_COMIC_BRIDGE_KEY.")
 
-          headers = {"X-Comic-Bridge-Key": bridge_key}
+          headers = {"Authorization": bridge_key}
           with tempfile.TemporaryDirectory(prefix="comic-job-") as temp:
               root = Path(temp)
               bundle = root / "bundle.zip"
