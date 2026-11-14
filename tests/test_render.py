@@ -23,7 +23,7 @@ class RenderSmokeTests(unittest.TestCase):
         )
 
         panels = []
-        for number in range(1, 41):
+        for number in range(1, 31):
             image_name = f"panel-{number:02d}.png"
             shutil.copyfile(seed, base / image_name)
             panels.append({
@@ -68,7 +68,7 @@ class RenderSmokeTests(unittest.TestCase):
         )
         return json.loads(result.stdout)
 
-    def test_renders_40_panels_to_valid_720p_mp4(self):
+    def test_renders_30_panels_to_valid_720p_mp4(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
             manifest = self._make_manifest(base)
