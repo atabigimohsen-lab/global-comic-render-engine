@@ -1,0 +1,140 @@
+name: Render Private Comic Bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: "Unique render job ID (8-64 letters, digits, underscore or hyphen)"
+        required: true
+        type: string
+      object_key:
+        description: "Private R2 object key, e.g. incoming/<job_id>.zip"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: comic-render-${{ inputs.job_id }}
+  cancel-in-progress: false
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      COMIC_JOB_ID: ${{ inputs.job_id }}
+      COMIC_OBJECT_KEY: ${{ inputs.object_key }}
+    steps:
+      - name: Check out renderer source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install FFmpeg and S3 client
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
+          python -m pip install --disable-pip-version-check boto3
+
+      - name: Download, validate, render and store privately
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import shutil
+          import subprocess
+          import tempfile
+          import zipfile
+          from pathlib import Path, PurePosixPath
+
+          import boto3
+
+          job_id = os.environ["COMIC_JOB_ID"]
+          object_key = os.environ["COMIC_OBJECT_KEY"]
+          if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", job_id):
+              raise SystemExit("Invalid job_id.")
+          if object_key != f"incoming/{job_id}.zip":
+              raise SystemExit("object_key must exactly match incoming/<job_id>.zip.")
+          required = ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY")
+          missing = [key for key in required if not os.environ.get(key)]
+          if missing:
+              raise SystemExit("Missing GitHub Actions repository secrets: " + ", ".join(missing))
+
+          s3 = boto3.client(
+              "s3",
+              endpoint_url=os.environ["R2_ENDPOINT"],
+              region_name="auto",
+              aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+              aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+          )
+
+          with tempfile.TemporaryDirectory(prefix="comic-job-") as temp:
+              root = Path(temp)
+              bundle = root / "bundle.zip"
+              extracted = root / "bundle"
+              extracted.mkdir()
+              s3.download_file(os.environ["R2_BUCKET"], object_key, str(bundle))
+
+              with zipfile.ZipFile(bundle) as archive:
+                  entries = archive.infolist()
+                  if not entries or len(entries) > 2000:
+                      raise SystemExit("Bundle must contain between 1 and 2000 entries.")
+                  if sum(item.file_size for item in entries) > 2_000_000_000:
+                      raise SystemExit("Uncompressed bundle exceeds the 2 GB safety limit.")
+                  for item in entries:
+                      name = item.filename
+                      path = PurePosixPath(name)
+                      if not name or path.is_absolute() or ".." in path.parts or "\\" in name:
+                          raise SystemExit("Unsafe path found in ZIP bundle.")
+                      if (item.external_attr >> 16) & 0o170000 == 0o120000:
+                          raise SystemExit("Symbolic links are not allowed in ZIP bundles.")
+                  if "manifest.json" not in archive.namelist():
+                      raise SystemExit("Bundle must contain manifest.json at its root.")
+                  archive.extractall(extracted)
+
+              manifest = extracted / "manifest.json"
+              output = root / "comic.mp4"
+              subprocess.run(
+                  ["python", "-m", "renderer.validate_manifest", str(manifest)],
+                  check=True,
+              )
+              subprocess.run(
+                  ["python", "-m", "renderer.render", str(manifest), "--output", str(output)],
+                  check=True,
+              )
+
+              probe = subprocess.run(
+                  [
+                      "ffprobe", "-v", "error", "-show_entries",
+                      "stream=codec_type,codec_name,width,height", "-of", "json", str(output)
+                  ],
+                  check=True, capture_output=True, text=True,
+              )
+              streams = json.loads(probe.stdout).get("streams", [])
+              video = next((stream for stream in streams if stream.get("codec_type") == "video"), None)
+              if not video or video.get("codec_name") != "h264" or video.get("width") != 1280 or video.get("height") != 720:
+                  raise SystemExit("Rendered MP4 failed the H.264 1280x720 output check.")
+              audio = [stream for stream in streams if stream.get("codec_type") == "audio"]
+              if audio and any(stream.get("codec_name") != "aac" for stream in audio):
+                  raise SystemExit("Rendered MP4 contains a non-AAC audio stream.")
+
+              output_key = f"rendered/{job_id}.mp4"
+              s3.upload_file(
+                  str(output),
+                  os.environ["R2_BUCKET"],
+                  output_key,
+                  ExtraArgs={"ContentType": "video/mp4"},
+              )
+              s3.delete_object(Bucket=os.environ["R2_BUCKET"], Key=object_key)
+              print("Private render complete. Output object: " + output_key)
+          PY
