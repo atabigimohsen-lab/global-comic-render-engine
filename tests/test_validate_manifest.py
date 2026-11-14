@@ -10,7 +10,7 @@ class ManifestValidationTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.base = Path(self.temp.name)
         self.panels = []
-        for number in range(1, 41):
+        for number in range(1, 31):
             image = f"panel-{number:02d}.png"
             (self.base / image).write_bytes(b"test-image-placeholder")
             self.panels.append({
@@ -29,13 +29,13 @@ class ManifestValidationTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def test_accepts_exactly_40_ordered_panels(self):
+    def test_accepts_exactly_30_ordered_panels(self):
         self.assertEqual(validate_manifest(self.manifest, self.base), [])
 
     def test_rejects_missing_panel(self):
         self.manifest["panels"] = self.panels[:-1]
         errors = validate_manifest(self.manifest, self.base)
-        self.assertTrue(any("exactly 40" in error for error in errors))
+        self.assertTrue(any("exactly 30" in error for error in errors))
 
     def test_rejects_duplicate_or_out_of_order_sequence(self):
         self.manifest["panels"][1]["seq"] = "01"
@@ -52,6 +52,15 @@ class ManifestValidationTests(unittest.TestCase):
         self.manifest["sourceFactRefs"] = [{"url": "https://news.example.com/story"}]
         errors = validate_manifest(self.manifest, self.base)
         self.assertTrue(any("two distinct domains" in error for error in errors))
+
+    def test_factual_story_accepts_distinct_publishers_with_google_news_redirect_urls(self):
+        self.manifest["isFactual"] = True
+        self.manifest["sourceFactRefs"] = [
+            {"publisher": "ncaa.org", "url": "https://news.google.com/rss/articles/source-one"},
+            {"publisher": "ferris.edu", "url": "https://news.google.com/rss/articles/source-two"},
+        ]
+        errors = validate_manifest(self.manifest, self.base)
+        self.assertEqual(errors, [])
 
     def test_rejects_parent_directory_image_traversal(self):
         outside = self.base.parent / "outside.png"
