@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 jobs:
-  validate:
+  validate-and-render:
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
@@ -21,5 +21,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Run manifest validation tests
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
+      - name: Run validation and render smoke tests
         run: python -m unittest discover -s tests -v
