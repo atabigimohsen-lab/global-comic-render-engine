@@ -1,10 +1,10 @@
 # Global Comic Render Engine
 
-A lightweight, FFmpeg-based renderer for original 40-panel comic videos.
+A lightweight, FFmpeg-based renderer for original 30-panel comic videos.
 
 ## Current scope
 
-- Validates exactly 40 ordered comic panels before rendering.
+- Validates exactly 30 ordered comic panels before rendering.
 - Requires an art prompt, local image, valid duration, and dialogue/narration/SFX or an explicit silent-panel marker for every panel.
 - Supports optional narration audio.
 - Produces H.264 MP4 at 1280×720 (16:9), 24 fps.
