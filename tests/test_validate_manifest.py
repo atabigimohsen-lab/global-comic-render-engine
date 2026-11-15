@@ -15,7 +15,7 @@ class ManifestValidationTests(unittest.TestCase):
     def tearDown(self): self.temp.cleanup()
     def test_accepts_exactly_40_ordered_panels(self): self.assertEqual(validate_manifest(self.manifest,self.base),[])
     def test_rejects_missing_panel(self):
-        self.manifest["panels"]=self.panels[:-1]; self.assertTrue(any("exactly 40" in e for e in validate_manifest(self.manifest,self.base)))
+        self.manifest["panels"]=self.panels[:-1]; self.assertTrue(any("40 panels required" in e for e in validate_manifest(self.manifest,self.base)))
     def test_rejects_out_of_order_sequence(self):
         self.manifest["panels"][1]["seq"]="01"; self.assertTrue(any("Panel 02" in e for e in validate_manifest(self.manifest,self.base)))
     def test_rejects_missing_image(self):
