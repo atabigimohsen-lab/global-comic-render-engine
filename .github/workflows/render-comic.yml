@@ -1,4 +1,4 @@
-name: Render 40-Panel Persian Audio Comic
+name: Render 30-Panel Persian Audio Slideshow
 on:
   workflow_dispatch:
     inputs:
@@ -65,7 +65,7 @@ jobs:
           import json,subprocess,sys
           from pathlib import Path
           root=Path("comic_input"); mp=root/"manifest.json"; m=json.loads(mp.read_text(encoding="utf-8")); panels=m.get("panels")
-          if not isinstance(panels,list) or len(panels)!=40: raise SystemExit("Expected exactly 40 panels")
+          if not isinstance(panels,list) or len(panels)!=30: raise SystemExit("Expected exactly 30 panels")
           voice=(m.get("audio") or {}).get("voice","fa-IR-FaridNeural"); folder=root/"audio"; folder.mkdir(exist_ok=True)
           for i,p in enumerate(panels,1):
               seq=f"{i:02d}"; narration=p.get("narration")
@@ -77,10 +77,10 @@ jobs:
               if not path.is_file() or path.stat().st_size<500: raise SystemExit(f"Panel {seq}: TTS file invalid")
               p["narrationAudio"]=f"audio/panel_{seq}.mp3"
           total_words=sum(len(p["narration"].split()) for p in panels)
-          if total_words>480: raise SystemExit(f"Total narration {total_words} words; maximum 480.")
-          m["audio"]={"narrationMode":"per_panel_tts","language":"fa-IR","voice":voice,"maxDurationSeconds":240}
+          if total_words>420: raise SystemExit(f"Total narration {total_words} words; maximum 420.")
+          m["audio"]={"narrationMode":"per_panel_tts","language":"fa-IR","voice":voice,"maxDurationSeconds":180}
           mp.write_text(json.dumps(m,ensure_ascii=False,indent=2),encoding="utf-8")
-          print(f"40 Persian narration files generated ({total_words} words; hard audio limit 240 seconds)")
+          print(f"40 Persian narration files generated ({total_words} words; hard audio limit 180 seconds)")
           PY
       - name: Validate and render synchronized audio slideshow
         run: |
@@ -94,7 +94,7 @@ jobs:
           data=json.loads(q.stdout); streams=data["streams"]; v=next((x for x in streams if x.get("codec_type")=="video"),None); a=next((x for x in streams if x.get("codec_type")=="audio"),None)
           if not v or v.get("codec_name")!="h264" or v.get("width")!=1280 or v.get("height")!=720 or not a or a.get("codec_name")!="aac": raise SystemExit("MP4 stream validation failed")
           duration=float(data["format"]["duration"])
-          if duration>240: raise SystemExit(f"MP4 duration {duration:.2f}s exceeds 4 minutes.")
+          if duration>180: raise SystemExit(f"MP4 duration {duration:.2f}s exceeds 3 minutes.")
           size=out.stat().st_size
           if not 0<size<=100_000_000: raise SystemExit("MP4 exceeds bridge size limit")
           with out.open("rb") as f: r=requests.post(base+"/upload",params={"fileName":os.environ["COMIC_JOB_ID"]+".mp4"},headers=headers,files={"data":(out.name,f,"video/mp4")},timeout=(20,95))
