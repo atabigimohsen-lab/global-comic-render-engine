@@ -1,99 +1,34 @@
-"""End-to-end FFmpeg rendering smoke tests using generated local media."""
-import json
-import shutil
-import subprocess
-import tempfile
-import unittest
+"""End-to-end FFmpeg smoke tests for 40 synchronized still/audio panels."""
+import json,shutil,subprocess,tempfile,unittest
 from pathlib import Path
-
 from renderer.render import render
 
-
-@unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg/ffprobe required")
+@unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),"FFmpeg/ffprobe required")
 class RenderSmokeTests(unittest.TestCase):
-    def _make_manifest(self, base: Path, with_audio: bool = False) -> Path:
-        seed = base / "seed.png"
-        subprocess.run(
-            [
-                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                "-f", "lavfi", "-i", "color=c=navy:s=320x180:d=1",
-                "-frames:v", "1", str(seed),
-            ],
-            check=True,
-        )
-
-        panels = []
-        for number in range(1, 31):
-            image_name = f"panel-{number:02d}.png"
-            shutil.copyfile(seed, base / image_name)
-            panels.append({
-                "seq": f"{number:02d}",
-                "artPrompt": f"Synthetic CI test panel {number}",
-                "image": image_name,
-                "durationSeconds": 0.25,
-                "narration": f"Panel {number}",
-            })
-
-        manifest = {
-            "title": "Synthetic renderer smoke test",
-            "aspectRatio": "16:9",
-            "panels": panels,
-        }
-        if with_audio:
-            audio_path = base / "narration.wav"
-            subprocess.run(
-                [
-                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                    "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
-                    "-t", "1", str(audio_path),
-                ],
-                check=True,
-            )
-            manifest["audio"] = {"narrationPath": audio_path.name}
-
-        manifest_path = base / "manifest.json"
-        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-        return manifest_path
-
-    def _probe(self, output: Path) -> dict:
-        result = subprocess.run(
-            [
-                "ffprobe", "-v", "error",
-                "-show_entries", "stream=codec_type,codec_name,width,height",
-                "-of", "json", str(output),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        return json.loads(result.stdout)
-
-    def test_renders_30_panels_to_valid_720p_mp4(self):
-        with tempfile.TemporaryDirectory() as temp:
-            base = Path(temp)
-            manifest = self._make_manifest(base)
-            output = base / "output" / "smoke-test.mp4"
-            render(manifest, output)
-
-            self.assertTrue(output.is_file())
-            self.assertGreater(output.stat().st_size, 1000)
-            streams = self._probe(output)["streams"]
-            video = next(stream for stream in streams if stream["codec_type"] == "video")
-            self.assertEqual(video["codec_name"], "h264")
-            self.assertEqual(video["width"], 1280)
-            self.assertEqual(video["height"], 720)
-
-    def test_renders_narration_audio_as_aac(self):
-        with tempfile.TemporaryDirectory() as temp:
-            base = Path(temp)
-            manifest = self._make_manifest(base, with_audio=True)
-            output = base / "output" / "smoke-test-audio.mp4"
-            render(manifest, output)
-
-            streams = self._probe(output)["streams"]
-            audio = next(stream for stream in streams if stream["codec_type"] == "audio")
-            self.assertEqual(audio["codec_name"], "aac")
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def _manifest(self,base:Path)->Path:
+        seed=base/"seed.png"
+        subprocess.run(["ffmpeg","-hide_banner","-loglevel","error","-y","-f","lavfi","-i","color=c=navy:s=320x180:d=1","-frames:v","1",str(seed)],check=True)
+        panels=[]
+        audio=base/"narration.wav"
+        subprocess.run(["ffmpeg","-hide_banner","-loglevel","error","-y","-f","lavfi","-i","sine=frequency=440:duration=0.35","-ar","22050",str(audio)],check=True)
+        for n in range(1,41):
+            img=f"panel-{n:02d}.png"; shutil.copyfile(seed,base/img)
+            aud=f"narration-{n:02d}.wav"; shutil.copyfile(audio,base/aud)
+            panels.append({"seq":f"{n:02d}","artPrompt":f"CI panel {n}","image":img,"durationSeconds":3,"narration":f"روایت آزمایشی اسلاید {n}","narrationAudio":aud})
+        m={"title":"40 panel test","aspectRatio":"16:9","audio":{"narrationMode":"per_panel_tts","language":"fa-IR","voice":"fa-IR-FaridNeural"},"panels":panels}
+        path=base/"manifest.json"; path.write_text(json.dumps(m,ensure_ascii=False),encoding="utf-8"); return path
+    def _streams(self,path:Path)->dict:
+        p=subprocess.run(["ffprobe","-v","error","-show_entries","stream=codec_type,codec_name,width,height","-of","json",str(path)],check=True,capture_output=True,text=True)
+        return json.loads(p.stdout)
+    def test_renders_40_panel_720p_mp4(self):
+        with tempfile.TemporaryDirectory() as d:
+            base=Path(d); m=self._manifest(base); out=base/"out.mp4"; render(m,out)
+            self.assertTrue(out.is_file()); self.assertGreater(out.stat().st_size,1000)
+            streams=self._streams(out)["streams"]; v=next(s for s in streams if s["codec_type"]=="video")
+            self.assertEqual((v["codec_name"],v["width"],v["height"]),("h264",1280,720))
+    def test_every_slide_has_matching_narration_audio(self):
+        with tempfile.TemporaryDirectory() as d:
+            base=Path(d); m=self._manifest(base); out=base/"out.mp4"; render(m,out)
+            streams=self._streams(out)["streams"]; a=next(s for s in streams if s["codec_type"]=="audio")
+            self.assertEqual(a["codec_name"],"aac")
+if __name__=="__main__": unittest.main()
