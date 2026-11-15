@@ -32,7 +32,7 @@ jobs:
           import requests
           job=os.environ["COMIC_JOB_ID"]; name=os.environ["DRIVE_FILE_NAME"]; key=os.environ.get("N8N_COMIC_BRIDGE_KEY"); base=os.environ["N8N_COMIC_BRIDGE_BASE"].rstrip("/")
           if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}",job): raise SystemExit("Invalid job id")
-          if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.zip",name,re.I): raise SystemExit("Invalid ZIP filename")
+          if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\\.zip",name,re.I): raise SystemExit("Invalid ZIP filename")
           if not key: raise SystemExit("Missing N8N_COMIC_BRIDGE_KEY")
           with requests.post(base+"/download",json={"fileName":name},headers={"Authorization":key},stream=True,timeout=(20,95)) as r:
               r.raise_for_status()
@@ -68,15 +68,19 @@ jobs:
           if not isinstance(panels,list) or len(panels)!=40: raise SystemExit("Expected exactly 40 panels")
           voice=(m.get("audio") or {}).get("voice","fa-IR-FaridNeural"); folder=root/"audio"; folder.mkdir(exist_ok=True)
           for i,p in enumerate(panels,1):
-              seq=f"{i:02d}"
-              if str(p.get("seq"))!=seq or not isinstance(p.get("narration"),str) or not p["narration"].strip(): raise SystemExit(f"Panel {seq}: sequence/narration invalid")
+              seq=f"{i:02d}"; narration=p.get("narration")
+              if str(p.get("seq"))!=seq or not isinstance(narration,str) or not narration.strip(): raise SystemExit(f"Panel {seq}: sequence/narration invalid")
+              words=len(narration.split())
+              if words>14: raise SystemExit(f"Panel {seq}: narration has {words} words; maximum 14.")
               path=folder/f"panel_{seq}.mp3"
-              subprocess.run([sys.executable,"-m","edge_tts","--voice",voice,"--text",p["narration"].strip(),"--write-media",str(path)],check=True)
+              subprocess.run([sys.executable,"-m","edge_tts","--voice",voice,"--text",narration.strip(),"--write-media",str(path)],check=True)
               if not path.is_file() or path.stat().st_size<500: raise SystemExit(f"Panel {seq}: TTS file invalid")
               p["narrationAudio"]=f"audio/panel_{seq}.mp3"
-          m["audio"]={"narrationMode":"per_panel_tts","language":"fa-IR","voice":voice}
+          total_words=sum(len(p["narration"].split()) for p in panels)
+          if total_words>480: raise SystemExit(f"Total narration {total_words} words; maximum 480.")
+          m["audio"]={"narrationMode":"per_panel_tts","language":"fa-IR","voice":voice,"maxDurationSeconds":240}
           mp.write_text(json.dumps(m,ensure_ascii=False,indent=2),encoding="utf-8")
-          print("40 Persian narration files generated")
+          print(f"40 Persian narration files generated ({total_words} words; hard audio limit 240 seconds)")
           PY
       - name: Validate and render synchronized audio slideshow
         run: |
@@ -86,13 +90,15 @@ jobs:
           m=Path("comic_input/manifest.json"); out=Path("comic.mp4"); base=os.environ["N8N_COMIC_BRIDGE_BASE"].rstrip("/"); headers={"Authorization":os.environ["N8N_COMIC_BRIDGE_KEY"]}
           subprocess.run(["python","-m","renderer.validate_manifest",str(m)],check=True)
           subprocess.run(["python","-m","renderer.render",str(m),"--output",str(out)],check=True)
-          q=subprocess.run(["ffprobe","-v","error","-show_entries","stream=codec_type,codec_name,width,height","-of","json",str(out)],check=True,capture_output=True,text=True)
-          streams=json.loads(q.stdout)["streams"]; v=next((x for x in streams if x.get("codec_type")=="video"),None); a=next((x for x in streams if x.get("codec_type")=="audio"),None)
+          q=subprocess.run(["ffprobe","-v","error","-show_entries","stream=codec_type,codec_name,width,height:format=duration","-of","json",str(out)],check=True,capture_output=True,text=True)
+          data=json.loads(q.stdout); streams=data["streams"]; v=next((x for x in streams if x.get("codec_type")=="video"),None); a=next((x for x in streams if x.get("codec_type")=="audio"),None)
           if not v or v.get("codec_name")!="h264" or v.get("width")!=1280 or v.get("height")!=720 or not a or a.get("codec_name")!="aac": raise SystemExit("MP4 stream validation failed")
+          duration=float(data["format"]["duration"])
+          if duration>240: raise SystemExit(f"MP4 duration {duration:.2f}s exceeds 4 minutes.")
           size=out.stat().st_size
           if not 0<size<=100_000_000: raise SystemExit("MP4 exceeds bridge size limit")
           with out.open("rb") as f: r=requests.post(base+"/upload",params={"fileName":os.environ["COMIC_JOB_ID"]+".mp4"},headers=headers,files={"data":(out.name,f,"video/mp4")},timeout=(20,95))
           r.raise_for_status(); saved=r.json()
           if saved.get("ok") is not True or not saved.get("fileId") or saved.get("mimeType")!="video/mp4": raise SystemExit("Private Drive upload not confirmed")
-          print(f"Audio comic uploaded: {saved['name']} | Drive ID {saved['fileId']} | {size} bytes; input ZIP retained")
+          print(f"Audio comic uploaded: {saved['name']} | {duration:.2f}s | Drive ID {saved['fileId']} | {size} bytes; input ZIP retained")
           PY
