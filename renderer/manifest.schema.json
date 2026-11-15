@@ -2,28 +2,68 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Global Comic Render Manifest",
   "type": "object",
-  "required": ["title", "aspectRatio", "panels"],
+  "required": [
+    "title",
+    "aspectRatio",
+    "audio",
+    "panels"
+  ],
   "properties": {
-    "title": { "type": "string", "minLength": 1 },
-    "category": { "type": "string" },
-    "isFactual": { "type": "boolean" },
-    "aspectRatio": { "const": "16:9" },
-    "worldBible": { "type": "string" },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "category": {
+      "type": "string"
+    },
+    "isFactual": {
+      "type": "boolean"
+    },
+    "aspectRatio": {
+      "const": "16:9"
+    },
+    "worldBible": {
+      "type": "string"
+    },
     "sourceFactRefs": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["url"],
+        "required": [
+          "url"
+        ],
         "properties": {
-          "publisher": { "type": "string" },
-          "url": { "type": "string", "format": "uri" }
+          "publisher": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          }
         }
       }
     },
     "audio": {
       "type": "object",
+      "required": [
+        "narrationMode",
+        "language",
+        "voice"
+      ],
       "properties": {
-        "narrationPath": { "type": "string" }
+        "narrationMode": {
+          "const": "per_panel_tts"
+        },
+        "language": {
+          "const": "fa-IR"
+        },
+        "voice": {
+          "type": "string",
+          "minLength": 1
+        },
+        "maxDurationSeconds": {
+          "const": 180
+        }
       },
       "additionalProperties": false
     },
@@ -33,17 +73,51 @@
       "maxItems": 30,
       "items": {
         "type": "object",
-        "required": ["seq", "artPrompt", "image", "durationSeconds"],
+        "required": [
+          "seq",
+          "artPrompt",
+          "image",
+          "durationSeconds",
+          "narration",
+          "narrationAudio"
+        ],
         "properties": {
-          "seq": { "type": "string", "pattern": "^(0[1-9]|1[0-9]|2[0-9]|30)$" },
-          "artPrompt": { "type": "string", "minLength": 1 },
-          "image": { "type": "string", "minLength": 1 },
-          "durationSeconds": { "type": "number", "minimum": 0.25, "maximum": 30 },
-          "dialogue": {},
-          "narration": { "type": "string" },
-          "sfx": {},
-          "silentPanel": { "type": "boolean" }
-        }
+          "seq": {
+            "type": "string",
+            "pattern": "^(0[1-9]|1[0-9]|2[0-9]|30)$"
+          },
+          "artPrompt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "image": {
+            "type": "string",
+            "minLength": 1
+          },
+          "durationSeconds": {
+            "const": 5
+          },
+          "narration": {
+            "type": "string",
+            "minLength": 1
+          },
+          "narrationAudio": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sourceFactRefs": {
+            "type": "array"
+          },
+          "dialogue": {
+            "type": "object",
+            "maxProperties": 0
+          },
+          "sfx": {
+            "type": "string",
+            "maxLength": 0
+          }
+        },
+        "additionalProperties": true
       }
     }
   }
