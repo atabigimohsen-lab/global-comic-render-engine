@@ -1,172 +1,98 @@
-name: Render Private Comic Bundle
-
+name: Render 40-Panel Persian Audio Comic
 on:
   workflow_dispatch:
     inputs:
-      job_id:
-        description: "Unique render job ID (8-64 letters, digits, underscore or hyphen)"
-        required: true
-        type: string
-      drive_file_name:
-        description: "Exact ZIP filename inside the private Google Drive input folder"
-        required: true
-        type: string
-
-permissions:
-  contents: read
-
-concurrency:
-  group: comic-render-${{ inputs.job_id }}
-  cancel-in-progress: false
-
+      job_id: {description: "Unique render job ID", required: true, type: string}
+      drive_file_name: {description: "Private Drive ZIP filename", required: true, type: string}
+permissions: {contents: read}
+concurrency: {group: "audio-comic-${{ inputs.job_id }}", cancel-in-progress: false}
 jobs:
   render:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       COMIC_JOB_ID: ${{ inputs.job_id }}
       DRIVE_FILE_NAME: ${{ inputs.drive_file_name }}
       N8N_COMIC_BRIDGE_KEY: ${{ secrets.N8N_COMIC_BRIDGE_KEY }}
       N8N_COMIC_BRIDGE_BASE: https://ata007.app.n8n.cloud/webhook/comic-render-bridge
-
     steps:
-      - name: Check out renderer source
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install FFmpeg and HTTP client
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - name: Install FFmpeg and Persian TTS
         run: |
           sudo apt-get update
           sudo apt-get install --yes ffmpeg
-          python -m pip install --disable-pip-version-check requests
-
-      - name: Download private ZIP through authenticated n8n bridge, validate, render and upload MP4
+          python -m pip install --disable-pip-version-check requests edge-tts
+      - name: Download private comic ZIP
         run: |
           python - <<'PY'
-          import json
-          import os
-          import re
-          import subprocess
-          import tempfile
-          import zipfile
-          from pathlib import Path, PurePosixPath
-
+          import os,re,tempfile,zipfile
+          from pathlib import Path,PurePosixPath
           import requests
-
-          job_id = os.environ["COMIC_JOB_ID"]
-          file_name = os.environ["DRIVE_FILE_NAME"]
-          bridge_key = os.environ.get("N8N_COMIC_BRIDGE_KEY")
-          bridge = os.environ["N8N_COMIC_BRIDGE_BASE"].rstrip("/")
-          if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", job_id):
-              raise SystemExit("Invalid job_id.")
-          if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.zip", file_name, re.IGNORECASE):
-              raise SystemExit("drive_file_name must be a simple ZIP filename without folders or path separators.")
-          if not bridge_key:
-              raise SystemExit("Missing GitHub Actions secret: N8N_COMIC_BRIDGE_KEY.")
-
-          headers = {"Authorization": bridge_key}
-          with tempfile.TemporaryDirectory(prefix="comic-job-") as temp:
-              root = Path(temp)
-              bundle = root / "bundle.zip"
-              extracted = root / "bundle"
-              extracted.mkdir()
-
-              with requests.post(
-                  f"{bridge}/download",
-                  json={"fileName": file_name},
-                  headers=headers,
-                  stream=True,
-                  timeout=(20, 95),
-              ) as response:
-                  response.raise_for_status()
-                  content_type = response.headers.get("Content-Type", "").split(";")[0].lower()
-                  if content_type != "application/zip":
-                      raise SystemExit("Private Drive bridge did not return an application/zip file.")
-                  total = 0
-                  with bundle.open("wb") as output_file:
-                      for chunk in response.iter_content(chunk_size=1024 * 1024):
-                          if chunk:
-                              total += len(chunk)
-                              if total > 100_000_000:
-                                  raise SystemExit("Input ZIP exceeds the 100 MB n8n Cloud bridge safety limit.")
-                              output_file.write(chunk)
-              if total == 0:
-                  raise SystemExit("Downloaded ZIP is empty.")
-
-              with zipfile.ZipFile(bundle) as archive:
-                  entries = archive.infolist()
-                  if not entries or len(entries) > 2000:
-                      raise SystemExit("Bundle must contain between 1 and 2000 entries.")
-                  if sum(item.file_size for item in entries) > 500_000_000:
-                      raise SystemExit("Uncompressed bundle exceeds the 500 MB safety limit.")
-                  names = set()
-                  for item in entries:
-                      name = item.filename
-                      path = PurePosixPath(name)
-                      if not name or path.is_absolute() or ".." in path.parts or chr(92) in name:
-                          raise SystemExit("Unsafe path found in ZIP bundle.")
-                      if (item.external_attr >> 16) & 0o170000 == 0o120000:
-                          raise SystemExit("Symbolic links are not allowed in ZIP bundles.")
-                      if name in names:
-                          raise SystemExit("Duplicate ZIP entry path.")
-                      names.add(name)
-                  if "manifest.json" not in names:
-                      raise SystemExit("Bundle must contain manifest.json at its root.")
-                  archive.extractall(extracted)
-
-              manifest = extracted / "manifest.json"
-              output = root / "comic.mp4"
-              subprocess.run(
-                  ["python", "-m", "renderer.validate_manifest", str(manifest)],
-                  check=True,
-              )
-              subprocess.run(
-                  ["python", "-m", "renderer.render", str(manifest), "--output", str(output)],
-                  check=True,
-              )
-
-              probe = subprocess.run(
-                  [
-                      "ffprobe", "-v", "error", "-show_entries",
-                      "stream=codec_type,codec_name,width,height", "-of", "json", str(output)
-                  ],
-                  check=True, capture_output=True, text=True,
-              )
-              streams = json.loads(probe.stdout).get("streams", [])
-              video = next((stream for stream in streams if stream.get("codec_type") == "video"), None)
-              if not video or video.get("codec_name") != "h264" or video.get("width") != 1280 or video.get("height") != 720:
-                  raise SystemExit("Rendered MP4 failed the H.264 1280x720 output check.")
-              audio = [stream for stream in streams if stream.get("codec_type") == "audio"]
-              if audio and any(stream.get("codec_name") != "aac" for stream in audio):
-                  raise SystemExit("Rendered MP4 contains a non-AAC audio stream.")
-
-              total_size = output.stat().st_size
-              if total_size <= 0 or total_size > 100_000_000:
-                  raise SystemExit("Rendered MP4 must be between 1 byte and 100 MB for the n8n Cloud bridge.")
-
-              with output.open("rb") as rendered_file:
-                  upload = requests.post(
-                      f"{bridge}/upload",
-                      params={"fileName": f"{job_id}.mp4"},
-                      headers=headers,
-                      files={"data": (f"{job_id}.mp4", rendered_file, "video/mp4")},
-                      timeout=(20, 95),
-                  )
-              upload.raise_for_status()
-              saved = upload.json()
-              if saved.get("ok") is not True or not saved.get("fileId") or saved.get("mimeType") != "video/mp4":
-                  raise SystemExit("Private Drive bridge did not confirm the MP4 upload.")
-              print(
-                  "Private render uploaded. Drive file ID: "
-                  + saved["fileId"]
-                  + " | name: "
-                  + str(saved.get("name"))
-                  + " | bytes: "
-                  + str(total_size)
-              )
-              print("Source ZIP was retained; no input file was deleted.")
+          job=os.environ["COMIC_JOB_ID"]; name=os.environ["DRIVE_FILE_NAME"]; key=os.environ.get("N8N_COMIC_BRIDGE_KEY"); base=os.environ["N8N_COMIC_BRIDGE_BASE"].rstrip("/")
+          if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}",job): raise SystemExit("Invalid job id")
+          if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.zip",name,re.I): raise SystemExit("Invalid ZIP filename")
+          if not key: raise SystemExit("Missing N8N_COMIC_BRIDGE_KEY")
+          with requests.post(base+"/download",json={"fileName":name},headers={"Authorization":key},stream=True,timeout=(20,95)) as r:
+              r.raise_for_status()
+              if r.headers.get("Content-Type","").split(";")[0].lower()!="application/zip": raise SystemExit("Bridge did not return ZIP")
+              with tempfile.NamedTemporaryFile(delete=False,suffix=".zip") as f:
+                  total=0
+                  for chunk in r.iter_content(1024*1024):
+                      if chunk:
+                          total+=len(chunk)
+                          if total>100_000_000: raise SystemExit("ZIP exceeds 100 MB")
+                          f.write(chunk)
+                  zp=Path(f.name)
+          out=Path("comic_input"); out.mkdir(exist_ok=True)
+          with zipfile.ZipFile(zp) as z:
+              es=z.infolist()
+              if not es or len(es)>2000 or sum(x.file_size for x in es)>500_000_000: raise SystemExit("ZIP safety limits exceeded")
+              seen=set()
+              for x in es:
+                  p=PurePosixPath(x.filename)
+                  if not x.filename or p.is_absolute() or ".." in p.parts or chr(92) in x.filename or x.filename in seen: raise SystemExit("Unsafe/duplicate ZIP entry")
+                  if (x.external_attr>>16)&0o170000==0o120000: raise SystemExit("Symlink not allowed")
+                  seen.add(x.filename)
+              if "manifest.json" not in seen: raise SystemExit("manifest missing")
+              z.extractall(out)
+          print(f"Downloaded {len(es)} files ({total} bytes)")
+          PY
+      - name: Generate one Persian narration track per slide
+        run: |
+          python - <<'PY'
+          import json,subprocess,sys
+          from pathlib import Path
+          root=Path("comic_input"); mp=root/"manifest.json"; m=json.loads(mp.read_text(encoding="utf-8")); panels=m.get("panels")
+          if not isinstance(panels,list) or len(panels)!=40: raise SystemExit("Expected exactly 40 panels")
+          voice=(m.get("audio") or {}).get("voice","fa-IR-FaridNeural"); folder=root/"audio"; folder.mkdir(exist_ok=True)
+          for i,p in enumerate(panels,1):
+              seq=f"{i:02d}"
+              if str(p.get("seq"))!=seq or not isinstance(p.get("narration"),str) or not p["narration"].strip(): raise SystemExit(f"Panel {seq}: sequence/narration invalid")
+              path=folder/f"panel_{seq}.mp3"
+              subprocess.run([sys.executable,"-m","edge_tts","--voice",voice,"--text",p["narration"].strip(),"--write-media",str(path)],check=True)
+              if not path.is_file() or path.stat().st_size<500: raise SystemExit(f"Panel {seq}: TTS file invalid")
+              p["narrationAudio"]=f"audio/panel_{seq}.mp3"
+          m["audio"]={"narrationMode":"per_panel_tts","language":"fa-IR","voice":voice}
+          mp.write_text(json.dumps(m,ensure_ascii=False,indent=2),encoding="utf-8")
+          print("40 Persian narration files generated")
+          PY
+      - name: Validate and render synchronized audio slideshow
+        run: |
+          python - <<'PY'
+          import json,os,subprocess,requests
+          from pathlib import Path
+          m=Path("comic_input/manifest.json"); out=Path("comic.mp4"); base=os.environ["N8N_COMIC_BRIDGE_BASE"].rstrip("/"); headers={"Authorization":os.environ["N8N_COMIC_BRIDGE_KEY"]}
+          subprocess.run(["python","-m","renderer.validate_manifest",str(m)],check=True)
+          subprocess.run(["python","-m","renderer.render",str(m),"--output",str(out)],check=True)
+          q=subprocess.run(["ffprobe","-v","error","-show_entries","stream=codec_type,codec_name,width,height","-of","json",str(out)],check=True,capture_output=True,text=True)
+          streams=json.loads(q.stdout)["streams"]; v=next((x for x in streams if x.get("codec_type")=="video"),None); a=next((x for x in streams if x.get("codec_type")=="audio"),None)
+          if not v or v.get("codec_name")!="h264" or v.get("width")!=1280 or v.get("height")!=720 or not a or a.get("codec_name")!="aac": raise SystemExit("MP4 stream validation failed")
+          size=out.stat().st_size
+          if not 0<size<=100_000_000: raise SystemExit("MP4 exceeds bridge size limit")
+          with out.open("rb") as f: r=requests.post(base+"/upload",params={"fileName":os.environ["COMIC_JOB_ID"]+".mp4"},headers=headers,files={"data":(out.name,f,"video/mp4")},timeout=(20,95))
+          r.raise_for_status(); saved=r.json()
+          if saved.get("ok") is not True or not saved.get("fileId") or saved.get("mimeType")!="video/mp4": raise SystemExit("Private Drive upload not confirmed")
+          print(f"Audio comic uploaded: {saved['name']} | Drive ID {saved['fileId']} | {size} bytes; input ZIP retained")
           PY
