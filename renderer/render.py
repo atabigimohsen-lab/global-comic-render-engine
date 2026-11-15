@@ -25,7 +25,7 @@ def render(manifest_path:Path,output_path:Path)->None:
             run([ff,"-hide_banner","-loglevel","error","-y","-loop","1","-framerate","24","-i",str(image),"-i",str(audio),"-vf","scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,format=yuv420p","-t",f"{duration:.3f}","-r","24","-c:v","libx264","-preset","veryfast","-crf","22","-c:a","aac","-b:a","128k","-ar","48000","-ac","2","-shortest","-movflags","+faststart",str(clip)])
         concat=tmp/"slides.ffconcat"; lines=["ffconcat version 1.0"]
         for c in clips: lines.append("file '"+str(c.resolve()).replace("'","'\\''")+"'")
-        concat.write_text("\\n".join(lines)+"\\n",encoding="utf-8")
+        concat.write_text("\n".join(lines)+"\n",encoding="utf-8")
         run([ff,"-hide_banner","-loglevel","error","-y","-f","concat","-safe","0","-i",str(concat),"-c","copy","-movflags","+faststart",str(output_path.resolve())])
     if not output_path.is_file() or output_path.stat().st_size==0: raise RuntimeError("No output MP4.")
 
