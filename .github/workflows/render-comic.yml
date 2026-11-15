@@ -32,7 +32,7 @@ jobs:
           import requests
           job=os.environ["COMIC_JOB_ID"]; name=os.environ["DRIVE_FILE_NAME"]; key=os.environ.get("N8N_COMIC_BRIDGE_KEY"); base=os.environ["N8N_COMIC_BRIDGE_BASE"].rstrip("/")
           if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}",job): raise SystemExit("Invalid job id")
-          if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\\.zip",name,re.I): raise SystemExit("Invalid ZIP filename")
+          if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.zip",name,re.I): raise SystemExit("Invalid ZIP filename")
           if not key: raise SystemExit("Missing N8N_COMIC_BRIDGE_KEY")
           with requests.post(base+"/download",json={"fileName":name},headers={"Authorization":key},stream=True,timeout=(20,95)) as r:
               r.raise_for_status()
@@ -80,7 +80,7 @@ jobs:
           if total_words>420: raise SystemExit(f"Total narration {total_words} words; maximum 420.")
           m["audio"]={"narrationMode":"per_panel_tts","language":"fa-IR","voice":voice,"maxDurationSeconds":180}
           mp.write_text(json.dumps(m,ensure_ascii=False,indent=2),encoding="utf-8")
-          print(f"40 Persian narration files generated ({total_words} words; hard audio limit 180 seconds)")
+          print(f"30 Persian narration files generated ({total_words} words; hard audio limit 180 seconds)")
           PY
       - name: Validate and render synchronized audio slideshow
         run: |
